@@ -1,2 +1,2 @@
 # MachineLearningCoursera
-Repo for Coursera Machine Learning Weightlifting prediction project
+The Exercise Project Writeup script produces `Exercise_Project_Writeup.html` which describes analysis of subjects doing sets of curls while fitted with motion sensors. Instructions for the Coursera Machine Learning course specify that students should not run the R Markdown script, but if run from an empty working directory it should function as intended. The URLs for the data sets are present in the script, but the `download.file` statements are commented out. The data sets are not present in this repo.

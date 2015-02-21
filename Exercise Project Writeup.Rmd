@@ -1,0 +1,193 @@
+---
+title: "Weightlifting Exercise Project"
+author: "David Himrich"
+date: "Saturday, February 21, 2015"
+output: html_document
+---
+
+This project uses data gathered by the authors of this paper:  
+
+> Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H.  Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+
+Read more: http://groupware.les.inf.puc-rio.br/har#ixzz3SOZmsUS2
+
+# Data Preparation
+
+I downloaded the data sets from the sources specified by the Coursera instructors.
+
+```{r getfiles, cache=TRUE}
+
+train.url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+
+# download.file(train.url, destfile="wle_training.csv")
+
+test.url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+# download.file(test.url, destfile="wle_testing.csv")
+
+
+```
+
+This project uses the caret package for data pre-processing and model training and validation. I did some basic pre-processing on the entire testing data set before splitting into training set and a validation set. The authors had created a number of prediction features from the sensor data streams via summary statistics such as means and variances. These features are present in the testing data as distinct columns, leaving NA values in those same columns for the rows with the original sensor data. My approach for this project was to remove all the features calculated by the original authors, and predict using only the sensor data.
+
+```{r remove_features }
+library(caret)
+
+training.df <- read.csv("wle_training.csv")
+
+## Remove the calculated feature rows, the ones with "new_window" variable
+## equal to "yes"
+train.pre.df <- training.df[training.df$new_window %in% "no", ]
+
+## That produces a data frame with 19216 rows 
+
+train.pre.df <- droplevels(train.pre.df)
+
+## The nearZeroVar function identifies correctly a number of calculated feature columns
+## that are missing but not coded NA
+nearZeroVar(train.pre.df, saveMetrics = TRUE)
+
+## We can use the column positions of nzv== TRUE to remove the un-needed columns:
+nzv <- nearZeroVar(train.pre.df)
+train.pre.df <- train.pre.df[,-nzv]
+
+## Remove the original training data
+rm(training.df)
+
+```
+
+These first pre-processing steps produced a data frame with 6 columns of identifiers, 52 columns of censor data, and the "classe" outcome variable. The `featurePlot` function from the caret package revealed a few extreme outlier values among the sensor data. I used various plots to confirm that these values were not consistent with the time series in which they are found. They appear to be transcription errors of some kind. I replaced them with NA values and then used the 'preProcess' function on all the columns of sensor data impute values to replace the outliers. That process also centered and scaled the sensor data.
+
+```{r outliers}
+
+## Example with one variable of outlier identification and removal
+boxplot(train.pre.df$gyros_dumbbell_z)
+which(train.pre.df$gyros_dumbbell_z > 250)
+plot(5260:5280, train.pre.df$gyros_dumbbell_z[5260:5280])
+
+train.pre.df$gyros_dumbbell_z[5270]
+train.pre.df$gyros_dumbbell_z[5270] <- NA
+
+## I proceeded in similar fashion to replace other outliers
+which(train.pre.df$gyros_dumbbell_x < -150)
+train.pre.df$gyros_dumbbell_x[5270]
+train.pre.df$gyros_dumbbell_x[5270] <- NA
+
+which(train.pre.df$gyros_dumbbell_y > 50)
+train.pre.df$gyros_dumbbell_y[5270]
+train.pre.df$gyros_dumbbell_y[5270] <- NA
+
+which(train.pre.df$magnet_dumbbell_y < -3000)
+train.pre.df$magnet_dumbbell_y[9088]
+train.pre.df$magnet_dumbbell_y[9088] <- NA
+
+which(train.pre.df$gyros_forearm_x < -10)
+train.pre.df$gyros_forearm_x[5270]
+train.pre.df$gyros_forearm_x[5270] <- NA
+
+which(train.pre.df$gyros_forearm_z > 200)
+train.pre.df$gyros_forearm_z[5270]
+train.pre.df$gyros_forearm_z[5270] <- NA
+
+which(train.pre.df$gyros_forearm_y > 200)
+train.pre.df$gyros_forearm_y[5270]
+train.pre.df$gyros_forearm_y[5270] <- NA
+
+## Apply the preProcess function to all the sensor columns to center, scale
+## and impute values to the just-created NA values
+sensor_cols <- colnames(train.pre.df)[7:58]
+preObj <- preProcess(train.pre.df[,sensor_cols],method="knnImpute")
+train.pre.df[,sensor_cols] <- predict(preObj, train.pre.df[,sensor_cols])
+
+
+```
+
+# Model Training
+Having removed the apparent transcription errors, I split the pre-processed training data into a training set and a validation set, fit a random forests model to the training data, and evaluated the results.
+
+```{r model, cache=TRUE}
+## Make training and validation data sets
+inTrain <- createDataPartition(y=train.pre.df$classe, p=0.75, list=FALSE)
+
+train.pre <- train.pre.df[inTrain, ]
+valid.pre <- train.pre.df[-inTrain, ]
+
+## Try a random forest using only the sensor data, set the measurement method "oob"
+set.seed(1927)
+WLE.rf <- train(x=train.pre[,sensor_cols],y=train.pre[,"classe"] , 
+                method="rf", trControl=trainControl(method="oob"))
+
+## Examine the model
+WLE.rf
+WLE.rf$results
+WLE.rf$finalModel
+
+## Plot the 20 variables with the highest importance in the final model 
+plot(varImp(WLE.rf), top=20)
+
+```
+
+This model appears to have a reasonably high accuracy rate (99.4%), especially considering that these sensor data are actually time series rather than independent observations. I would have preferred to pre-process the sensor data as time series, but the organization of the data is such that I was not confident that I could correctly identify the time series and pre-process them correctly.
+
+# Model Validation
+I proceeded by using this model to predict on the validation set I held out from the original training data. This may not have been strictly necessary, as the random forest method as applied by the train function from the caret package does some model tuning and cross-validation by default.
+
+```{r valid}
+# Predict on the validation set (internal partition) with the final model
+pred.rf <- predict(WLE.rf$finalModel, valid.pre)
+confusionMatrix(pred.rf,valid.pre$classe)
+
+```
+
+The accuracy on the validation data (99.2%) was very similar to that for the training data, suggesting that the cross-validation inherent in the random forest method was effective.
+
+# Predictions on Test Data
+The test data are only 20 observation from streams of sensor data. This initial random forest model appears to be accurate enough to attempt predictions for those test observations and submit them for credit.
+
+```{r test}
+
+testing.df <- read.csv("wle_testing.csv", na.strings=c(""," ","NA"))
+## Process as with the test set
+## Keep only new_window = no
+test.pre.df <- testing.df[testing.df$new_window %in% "no", ]
+
+## look for near-zero variance columns
+nearZeroVar(test.pre.df, saveMetrics = TRUE)
+
+## that appears to identify all the calculated feature columns again
+## remove those nzv columns
+nzv2 <- nearZeroVar(test.pre.df)
+test.pre.df <- test.pre.df[,-nzv2]
+
+test.pre.df <- droplevels(test.pre.df)
+
+## now there are 59 columns like the training set, check the names
+setdiff(colnames(train.pre.df), colnames(test.pre.df))
+setdiff(colnames(test.pre.df), colnames(train.pre.df))
+
+# remove the original testing.df, we don't need it
+rm(testing.df)
+
+## Check if you can use the sensor_cols vector
+setdiff(sensor_cols, colnames(test.pre.df))
+setdiff(colnames(test.pre.df), sensor_cols)
+
+## That showed only the identifier columns as not in the sensor_cols vector
+## Apply the preprocessing object from the training set to the sensor columns to center and scale
+## would also impute NA values, which I think are not present
+test.pre.df[,sensor_cols] <- predict(preObj, test.pre.df[,sensor_cols])
+
+# Predict on the test set with the final model
+predicted.test.rf <- predict(WLE.rf, test.pre.df)
+
+# change this from a list to a character vector
+predicted.test.rf <- as.character(predicted.test.rf)
+class(predicted.test.rf)
+
+```
+
+I submitted these final predictions on the test data to the Coursera web site and found that all 20 were correct.
+
+# Conclusions
+I found it very interesting that it was possible to ignore the time-series nature of the sensor data and still make accurate predictions of the exercise classification, even on single observations as in the final test set. Perhaps pre-processing the data as time-series would be too computationally intense for application in real-time exercise monitoring. On the other hand, the Global Positioning System is also computationally demanding, but very compact receivers that accomplish those calculations have been implemented with specialized chipsets. Presumably something similar could be created to monitor exercise technique.
